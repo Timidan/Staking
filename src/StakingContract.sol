@@ -11,11 +11,12 @@ contract StakingContract is ReentrancyGuard, Pausable, Ownable {
     IERC20 public stakingToken;
     
     // Constants
-    uint256 public constant INITIAL_APR = 250; // 250%
-    uint256 public constant MIN_LOCK_DURATION = 1 days;
+    uint256 public initialApr;
+    uint256 public minLockDuration;
+    uint256 public aprReductionPerThousand;
+    uint256 public emergencyWithdrawPenalty;
+    
     uint256 public constant REWARDS_PER_MINUTE_PRECISION = 1e18;
-    uint256 public constant APR_REDUCTION_PER_THOUSAND = 5; // Reduces APR by 0.5% for every 1000 tokens staked
-    uint256 public constant EMERGENCY_WITHDRAW_PENALTY = 50; // 50% penalty for emergency withdrawal
     uint256 public constant PRECISION = 1e18;
     
     // Storage variables
@@ -90,11 +91,27 @@ contract StakingContract is ReentrancyGuard, Pausable, Ownable {
     event StakingPaused(uint256 timestamp);
     event StakingUnpaused(uint256 timestamp);
     
-    constructor(address _stakingToken) Ownable(msg.sender) {
+    constructor(
+        address _stakingToken,
+        uint256 _initialApr,
+        uint256 _minLockDuration,
+        uint256 _aprReductionPerThousand,
+        uint256 _emergencyWithdrawPenalty
+    ) Ownable(msg.sender) {
         require(_stakingToken != address(0), "Invalid token address");
+        require(_initialApr > 0, "Invalid APR");
+        require(_minLockDuration > 0, "Invalid lock duration");
+        require(_aprReductionPerThousand > 0, "Invalid reduction rate");
+        require(_emergencyWithdrawPenalty <= 100, "Invalid penalty");
+        
         stakingToken = IERC20(_stakingToken);
-        currentRewardRate = INITIAL_APR;
-        emit StakingInitialized(_stakingToken, INITIAL_APR, block.timestamp);
+        initialApr = _initialApr;
+        minLockDuration = _minLockDuration;
+        aprReductionPerThousand = _aprReductionPerThousand;
+        emergencyWithdrawPenalty = _emergencyWithdrawPenalty;
+        currentRewardRate = _initialApr;
+        
+        emit StakingInitialized(_stakingToken, _initialApr, block.timestamp);
     }
     
     // Core functions
@@ -133,7 +150,7 @@ contract StakingContract is ReentrancyGuard, Pausable, Ownable {
         require(_amount > 0, "Cannot withdraw 0");
         require(_amount <= user.stakedAmount, "Insufficient staked amount");
         require(
-            block.timestamp >= user.lastStakeTimestamp + MIN_LOCK_DURATION,
+            block.timestamp >= user.lastStakeTimestamp + minLockDuration,
             "Lock duration not met"
         );
         
@@ -165,7 +182,7 @@ contract StakingContract is ReentrancyGuard, Pausable, Ownable {
         require(user.stakedAmount > 0, "No stake to withdraw");
         
         uint256 amount = user.stakedAmount;
-        uint256 penalty = (amount * EMERGENCY_WITHDRAW_PENALTY) / 100;
+        uint256 penalty = (amount * emergencyWithdrawPenalty) / 100;
         uint256 withdrawAmount = amount - penalty;
         
         // Reset user info
@@ -233,16 +250,16 @@ contract StakingContract is ReentrancyGuard, Pausable, Ownable {
     }
     
     function _updateRewardRate() internal {
-        uint256 newRate = INITIAL_APR;
+        uint256 newRate = initialApr;
         
         // Avoid division by zero and ensure proper scaling
         if (totalStaked >= 1000 * 1e18) {
             uint256 scalingFactor = 1e18;
             uint256 thousandTokens = (totalStaked * scalingFactor) / (1000 * 1e18);
-            uint256 reduction = (thousandTokens * APR_REDUCTION_PER_THOUSAND) / scalingFactor;
+            uint256 reduction = (thousandTokens * aprReductionPerThousand) / scalingFactor;
             
             // Ensure we don't underflow when subtracting reduction
-            newRate = reduction >= INITIAL_APR ? 10 : INITIAL_APR - reduction;
+            newRate = reduction >= initialApr ? 10 : initialApr - reduction;
         }
         
         if (newRate != currentRewardRate) {
@@ -279,25 +296,25 @@ contract StakingContract is ReentrancyGuard, Pausable, Ownable {
     
     function getTimeUntilUnlock(address _user) external view returns (uint256) {
         UserInfo storage user = userInfo[_user];
-        if (block.timestamp >= user.lastStakeTimestamp + MIN_LOCK_DURATION) {
+        if (block.timestamp >= user.lastStakeTimestamp + minLockDuration) {
             return 0;
         }
-        return user.lastStakeTimestamp + MIN_LOCK_DURATION - block.timestamp;
+        return user.lastStakeTimestamp + minLockDuration - block.timestamp;
     }
     
     // Add this view function before the admin functions
     function getUserDetails(address _user) external view returns (UserDetails memory) {
         UserInfo storage user = userInfo[_user];
-        uint256 timeUntilUnlock = block.timestamp >= user.lastStakeTimestamp + MIN_LOCK_DURATION ? 
+        uint256 timeUntilUnlock = block.timestamp >= user.lastStakeTimestamp + minLockDuration ? 
             0 : 
-            user.lastStakeTimestamp + MIN_LOCK_DURATION - block.timestamp;
+            user.lastStakeTimestamp + minLockDuration - block.timestamp;
             
         return UserDetails({
             stakedAmount: user.stakedAmount,
             lastStakeTimestamp: user.lastStakeTimestamp,
             pendingRewards: getPendingRewards(_user),
             timeUntilUnlock: timeUntilUnlock,
-            canWithdraw: block.timestamp >= user.lastStakeTimestamp + MIN_LOCK_DURATION
+            canWithdraw: block.timestamp >= user.lastStakeTimestamp + minLockDuration
         });
     }
     
@@ -331,4 +348,25 @@ contract StakingContract is ReentrancyGuard, Pausable, Ownable {
         uint256 amount,
         uint256 timestamp
     );
+
+    // Add setter functions
+    function setInitialApr(uint256 _newApr) external onlyOwner {
+        require(_newApr > 0, "Invalid APR");
+        initialApr = _newApr;
+    }
+
+    function setMinLockDuration(uint256 _newDuration) external onlyOwner {
+        require(_newDuration > 0, "Invalid duration");
+        minLockDuration = _newDuration;
+    }
+
+    function setAprReductionPerThousand(uint256 _newReduction) external onlyOwner {
+        require(_newReduction > 0, "Invalid reduction");
+        aprReductionPerThousand = _newReduction;
+    }
+
+    function setEmergencyWithdrawPenalty(uint256 _newPenalty) external onlyOwner {
+        require(_newPenalty <= 100, "Invalid penalty");
+        emergencyWithdrawPenalty = _newPenalty;
+    }
 } 

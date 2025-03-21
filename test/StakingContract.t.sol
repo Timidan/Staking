@@ -8,6 +8,18 @@ import "./mocks/MockERC20.sol";
 contract StakingContractTest is Test {
 
     error EnforcedPause();
+
+    // Add events
+    event Staked(address indexed user, uint256 amount, uint256 timestamp, uint256 newTotalStaked, uint256 currentRewardRate);
+    event Withdrawn(address indexed user, uint256 amount, uint256 timestamp, uint256 newTotalStaked, uint256 currentRewardRate, uint256 rewardsAccrued);
+    event RewardsClaimed(address indexed user, uint256 amount, uint256 timestamp, uint256 newPendingRewards, uint256 totalStaked);
+    event RewardRateUpdated(uint256 oldRate, uint256 newRate, uint256 timestamp, uint256 totalStaked);
+    event EmergencyWithdrawn(address indexed user, uint256 amount, uint256 penalty, uint256 timestamp, uint256 newTotalStaked);
+    event StakingPaused(uint256 timestamp);
+    event StakingUnpaused(uint256 timestamp);
+    event StakingInitialized(address indexed stakingToken, uint256 initialRewardRate, uint256 timestamp);
+    event TokenRecovered(address indexed token, uint256 amount, uint256 timestamp);
+
     StakingContract public staking;
     MockERC20 public token;
     
@@ -16,9 +28,21 @@ contract StakingContractTest is Test {
     
     uint256 public constant INITIAL_BALANCE = 1000 * 1e18;
     
+    // Add default config values
+    uint256 public constant DEFAULT_APR = 250;
+    uint256 public constant DEFAULT_LOCK_DURATION = 1 days;
+    uint256 public constant DEFAULT_APR_REDUCTION = 5;
+    uint256 public constant DEFAULT_WITHDRAW_PENALTY = 50;
+    
     function setUp() public {
         token = new MockERC20();
-        staking = new StakingContract(address(token));
+        staking = new StakingContract(
+            address(token),
+            DEFAULT_APR,
+            DEFAULT_LOCK_DURATION,
+            DEFAULT_APR_REDUCTION,
+            DEFAULT_WITHDRAW_PENALTY
+        );
         
         token.mint(alice, INITIAL_BALANCE);
         token.mint(bob, INITIAL_BALANCE);
@@ -31,7 +55,11 @@ contract StakingContractTest is Test {
 
     function testInitialSetup() public {
         assertEq(address(staking.stakingToken()), address(token));
-        assertEq(staking.currentRewardRate(), staking.INITIAL_APR());
+        assertEq(staking.currentRewardRate(), DEFAULT_APR);
+        assertEq(staking.initialApr(), DEFAULT_APR);
+        assertEq(staking.minLockDuration(), DEFAULT_LOCK_DURATION);
+        assertEq(staking.aprReductionPerThousand(), DEFAULT_APR_REDUCTION);
+        assertEq(staking.emergencyWithdrawPenalty(), DEFAULT_WITHDRAW_PENALTY);
         assertEq(staking.totalStaked(), 0);
     }
     
@@ -63,7 +91,7 @@ contract StakingContractTest is Test {
         vm.prank(alice);
         staking.stake(stakeAmount);
         
-        vm.warp(block.timestamp + staking.MIN_LOCK_DURATION() + 1);
+        vm.warp(block.timestamp + staking.minLockDuration() + 1);
         
         vm.prank(alice);
         staking.withdraw(stakeAmount);
@@ -93,7 +121,7 @@ contract StakingContractTest is Test {
         staking.stake(largeStake);
         
         assertTrue(
-            staking.currentRewardRate() < staking.INITIAL_APR(),
+            staking.currentRewardRate() < staking.initialApr(),
             "Rate should have decreased"
         );
     }
@@ -108,13 +136,11 @@ contract StakingContractTest is Test {
         
         vm.prank(alice);
         staking.emergencyWithdraw();
-        
         uint256 balanceAfter = token.balanceOf(alice);
-        uint256 expectedReturn = (stakeAmount * (100 - staking.EMERGENCY_WITHDRAW_PENALTY())) / 100;
+        uint256 expectedReturn = (stakeAmount * (100 - staking.emergencyWithdrawPenalty())) / 100;
         
         assertEq(balanceAfter - balanceBefore, expectedReturn);
     }
-    
     function testPause() public {
         staking.pause();
         
@@ -134,11 +160,11 @@ contract StakingContractTest is Test {
         assertEq(details.stakedAmount, stakeAmount);
         assertEq(details.lastStakeTimestamp, block.timestamp);
         assertEq(details.pendingRewards, 0); // No rewards yet as no time passed
-        assertEq(details.timeUntilUnlock, staking.MIN_LOCK_DURATION());
+        assertEq(details.timeUntilUnlock, staking.minLockDuration());
         assertFalse(details.canWithdraw);
         
         // Test after lock period
-        vm.warp(block.timestamp + staking.MIN_LOCK_DURATION() + 1);
+        vm.warp(block.timestamp + staking.minLockDuration() + 1);
         
         details = staking.getUserDetails(alice);
         assertTrue(details.canWithdraw);
@@ -154,18 +180,18 @@ contract StakingContractTest is Test {
         
         assertEq(
             staking.getTimeUntilUnlock(alice),
-            staking.MIN_LOCK_DURATION()
+            DEFAULT_LOCK_DURATION
         );
         
         // Advance half the lock duration
-        vm.warp(block.timestamp + staking.MIN_LOCK_DURATION() / 2);
+        vm.warp(block.timestamp + DEFAULT_LOCK_DURATION / 2);
         assertEq(
             staking.getTimeUntilUnlock(alice),
-            staking.MIN_LOCK_DURATION() / 2
+            DEFAULT_LOCK_DURATION / 2
         );
         
         // Advance past lock duration
-        vm.warp(block.timestamp + staking.MIN_LOCK_DURATION());
+        vm.warp(block.timestamp + DEFAULT_LOCK_DURATION);
         assertEq(staking.getTimeUntilUnlock(alice), 0);
     }
     
@@ -254,7 +280,7 @@ contract StakingContractTest is Test {
         vm.prank(alice);
         staking.stake(stakeAmount);
         
-        uint256 expectedReturn = (stakeAmount * (100 - staking.EMERGENCY_WITHDRAW_PENALTY())) / 100;
+        uint256 expectedReturn = (stakeAmount * (100 - 50)) / 100; // 50% penalty hardcoded
         uint256 expectedPenalty = stakeAmount - expectedReturn;
         
         vm.prank(alice);
@@ -271,5 +297,183 @@ contract StakingContractTest is Test {
             expectedPenalty,
             "Should keep correct penalty amount"
         );
+    }
+    
+    function testStakingEvents() public {
+        uint256 stakeAmount = 100 * 1e18;
+        
+        vm.expectEmit(true, false, false, true);
+        emit Staked(
+            alice,
+            stakeAmount,
+            block.timestamp,
+            stakeAmount,
+            staking.initialApr()  // currentRewardRate
+        );
+        
+        vm.prank(alice);
+        staking.stake(stakeAmount);
+    }
+    
+    function testWithdrawEvents() public {
+        uint256 stakeAmount = 100 * 1e18;
+        
+        vm.prank(alice);
+        staking.stake(stakeAmount);
+        
+        uint256 withdrawTime = block.timestamp + staking.minLockDuration() + 1;
+        vm.warp(withdrawTime);
+        
+        // Get pending rewards before withdrawal
+        uint256 pendingRewards = staking.getPendingRewards(alice);
+        
+        vm.expectEmit(true, false, false, true);
+        emit Withdrawn(
+            alice,
+            stakeAmount,
+            withdrawTime,
+            0, // newTotalStaked
+            staking.initialApr(),
+            pendingRewards // Include actual pending rewards
+        );
+        
+        vm.prank(alice);
+        staking.withdraw(stakeAmount);
+    }
+    
+    function testRewardClaimEvents() public {
+        uint256 stakeAmount = 100 * 1e18;
+        
+        vm.prank(alice);
+        staking.stake(stakeAmount);
+        
+        // Advance time to accumulate rewards
+        vm.warp(block.timestamp + 60);
+        
+        uint256 expectedRewards = staking.getPendingRewards(alice);
+        
+        vm.expectEmit(true, false, false, true);
+        emit RewardsClaimed(
+            alice,
+            expectedRewards,
+            block.timestamp,
+            0, // newPendingRewards
+            stakeAmount // totalStaked
+        );
+        
+        vm.prank(alice);
+        staking.claimRewards();
+    }
+    
+    function testRewardRateUpdateEvents() public {
+        uint256 largeStake = 10_000 * 1e18;
+        token.mint(alice, largeStake);
+        
+        uint256 oldRate = staking.currentRewardRate();
+        
+        vm.expectEmit(false, false, false, true);
+        emit RewardRateUpdated(
+            oldRate,
+            oldRate - 50, // Expected new rate after 10k tokens
+            block.timestamp,
+            largeStake
+        );
+        
+        vm.prank(alice);
+        staking.stake(largeStake);
+    }
+    
+    function testEmergencyWithdrawEvents() public {
+        uint256 stakeAmount = 100 * 1e18;
+        
+        vm.prank(alice);
+        staking.stake(stakeAmount);
+        
+        uint256 penalty = (stakeAmount * staking.emergencyWithdrawPenalty()) / 100;
+        uint256 withdrawAmount = stakeAmount - penalty;
+        
+        vm.expectEmit(true, false, false, true);
+        emit EmergencyWithdrawn(
+            alice,
+            withdrawAmount,
+            penalty,
+            block.timestamp,
+            0 // newTotalStaked
+        );
+        
+        vm.prank(alice);
+        staking.emergencyWithdraw();
+    }
+    
+    function testPauseEvents() public {
+        vm.expectEmit(false, false, false, true);
+        emit StakingPaused(block.timestamp);
+        staking.pause();
+        
+        vm.expectEmit(false, false, false, true);
+        emit StakingUnpaused(block.timestamp);
+        staking.unpause();
+    }
+    
+    function testInitializationEvent() public {
+        address newTokenAddress = address(new MockERC20());
+        
+        vm.expectEmit(true, false, false, true);
+        emit StakingInitialized(
+            newTokenAddress,
+            staking.initialApr(),
+            block.timestamp
+        );
+        
+        StakingContract newStaking = new StakingContract(newTokenAddress, staking.initialApr(), staking.minLockDuration(), staking.aprReductionPerThousand(), staking.emergencyWithdrawPenalty());
+    }
+    
+    function testTokenRecoveryEvent() public {
+        // Deploy a different token to recover
+        MockERC20 wrongToken = new MockERC20();
+        uint256 amount = 100 * 1e18;
+        wrongToken.mint(address(staking), amount);
+        
+        vm.expectEmit(true, false, false, true);
+        emit TokenRecovered(
+            address(wrongToken),
+            amount,
+            block.timestamp
+        );
+        
+        staking.recoverERC20(address(wrongToken), amount);
+    }
+
+    // Add test for config setters
+    function testConfigSetters() public {
+        uint256 newApr = 300;
+        uint256 newLockDuration = 2 days;
+        uint256 newReduction = 10;
+        uint256 newPenalty = 25;
+
+        staking.setInitialApr(newApr);
+        staking.setMinLockDuration(newLockDuration);
+        staking.setAprReductionPerThousand(newReduction);
+        staking.setEmergencyWithdrawPenalty(newPenalty);
+
+        assertEq(staking.initialApr(), newApr);
+        assertEq(staking.minLockDuration(), newLockDuration);
+        assertEq(staking.aprReductionPerThousand(), newReduction);
+        assertEq(staking.emergencyWithdrawPenalty(), newPenalty);
+    }
+
+    // Add test for config validation
+    function testConfigValidation() public {
+        vm.expectRevert("Invalid APR");
+        staking.setInitialApr(0);
+
+        vm.expectRevert("Invalid duration");
+        staking.setMinLockDuration(0);
+
+        vm.expectRevert("Invalid reduction");
+        staking.setAprReductionPerThousand(0);
+
+        vm.expectRevert("Invalid penalty");
+        staking.setEmergencyWithdrawPenalty(101);
     }
 } 
