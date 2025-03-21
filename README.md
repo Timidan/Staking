@@ -1,66 +1,81 @@
-## Foundry
+# Dynamic APR Staking Contract
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+A Solidity smart contract for staking tokens with a dynamic APR system that adjusts based on total value locked (TVL).
 
-Foundry consists of:
+## Features
 
--   **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
--   **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
--   **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
--   **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+- Initial 250% APR that reduces as TVL increases
+- Per-minute reward calculations
+- Minimum 1-day staking period
+- Emergency withdrawal with 50% penalty
+- Dynamic reward rate adjustment
+- Subgraph-friendly events
+- Comprehensive view functions
 
-## Documentation
+## Contract Details
 
-https://book.getfoundry.sh/
+- Initial APR: 250%
+- APR Reduction: 0.5% per 1000 tokens staked
+- Minimum Lock Duration: 1 day
+- Emergency Withdrawal Penalty: 50%
+- Reward Calculation: Per minute
+- Minimum APR: 10%
 
-## Usage
+## Development
+
+This project uses [Foundry](https://book.getfoundry.sh/) for development and testing.
+
+### Prerequisites
+
+```bash
+curl -L https://foundry.paradigm.xyz | bash
+foundryup
+```
+
+### Installation
+
+```bash
+forge install
+```
 
 ### Build
 
-```shell
-$ forge build
+```bash
+forge build
 ```
 
 ### Test
 
-```shell
-$ forge test
+```bash
+forge test
 ```
 
-### Format
+### Test Coverage
 
-```shell
-$ forge fmt
+```bash
+forge coverage
 ```
 
-### Gas Snapshots
+## Security Features
 
-```shell
-$ forge snapshot
-```
+- Reentrancy protection
+- Pausable functionality
+- Owner controls
+- Emergency withdrawal system
+- Token recovery for wrong tokens
+- Arithmetic overflow protection
 
-### Anvil
+## View Functions
 
-```shell
-$ anvil
-```
+- `getUserDetails`: Get comprehensive user staking information
+- `getPendingRewards`: Calculate pending rewards
+- `getTimeUntilUnlock`: Check remaining lock time
+- `getTotalRewards`: Get total rewards in contract
 
-### Deploy
+## Events
 
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
+All events include timestamps and relevant state changes for easy tracking and subgraph integration.
 
-### Cast
+## License
 
-```shell
-$ cast <subcommand>
-```
-
-### Help
-
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+MIT
